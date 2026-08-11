@@ -32,9 +32,12 @@ export function ProfileStats() {
     return {
       subject: topic.replace('Arc', '').trim(), // Shorten long names
       score: Math.round((correct / Math.max(total, 1)) * 100),
-      fullMark: 100
+      fullMark: 100,
+      originalTopic: topic
     };
   });
+
+  const topTopic = radarData.length > 0 ? radarData.reduce((prev, current) => (prev.score > current.score) ? prev : current) : null;
 
   return (
     <div className="bg-white/60 dark:bg-slate-800/40 p-6 rounded-2xl border border-slate-200 dark:border-slate-700/50 max-w-md mx-auto w-full">
@@ -57,6 +60,13 @@ export function ProfileStats() {
           </div>
         )}
       </div>
+
+      {topTopic && topTopic.score > 0 && (
+        <div className="mb-2 text-center text-sm">
+          <span className="text-slate-500 dark:text-slate-400 font-semibold">Top Topic: </span>
+          <span className="font-bold text-rose-500 dark:text-rose-400">{topTopic.originalTopic} ({topTopic.score}%)</span>
+        </div>
+      )}
 
       {radarData.length > 2 && (
         <div className="w-full h-64 mt-4 relative">

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Trophy, Loader2 } from 'lucide-react';
+import { Trophy, Loader2, Calendar } from 'lucide-react';
 
 interface ScoreEntry {
   id: string;
@@ -9,19 +9,31 @@ interface ScoreEntry {
   score: number;
 }
 
-export function Leaderboard() {
+export function Leaderboard({ isDaily }: { isDaily?: boolean }) {
   const [scores, setScores] = useState<ScoreEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchLeaderboard = async () => {
       try {
-        const q = query(collection(db, 'leaderboard'), orderBy('score', 'desc'), limit(10));
+        let collectionRef;
+        if (isDaily) {
+          const today = new Date().toISOString().split('T')[0];
+          collectionRef = collection(db, `daily_leaderboard/${today}/entries`);
+        } else {
+          collectionRef = collection(db, 'leaderboard');
+        }
+        
+        const q = query(collectionRef, orderBy('score', 'desc'), limit(10));
         const querySnapshot = await getDocs(q);
-        const fetchedScores = querySnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        })) as ScoreEntry[];
+        const fetchedScores = querySnapshot.docs.map(doc => {
+          const data = doc.data() as { displayName?: string; score?: number };
+          return {
+            id: doc.id,
+            displayName: data.displayName || 'Anonymous Slayer',
+            score: data.score || 0
+          };
+        }) as ScoreEntry[];
         setScores(fetchedScores);
       } catch (error) {
         console.error('Error fetching leaderboard:', error);
@@ -30,7 +42,7 @@ export function Leaderboard() {
       }
     };
     fetchLeaderboard();
-  }, []);
+  }, [isDaily]);
 
   if (loading) {
     return (
@@ -43,8 +55,8 @@ export function Leaderboard() {
   return (
     <div className="bg-white/90 dark:bg-slate-800/80 backdrop-blur-md rounded-3xl p-6 md:p-8 border border-slate-200 dark:border-slate-700/50 shadow-2xl w-full max-w-md mx-auto">
       <div className="flex items-center gap-3 justify-center mb-6 text-amber-500 dark:text-amber-400">
-        <Trophy className="w-8 h-8" />
-        <h2 className="text-2xl font-bold">Global Top 10</h2>
+        {isDaily ? <Calendar className="w-8 h-8" /> : <Trophy className="w-8 h-8" />}
+        <h2 className="text-2xl font-bold">{isDaily ? "Today's Top 10" : "Global Top 10"}</h2>
       </div>
       <div className="space-y-3">
         {scores.length === 0 ? (
