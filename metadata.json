@@ -1,0 +1,6 @@
+{
+  "name": "Demon Slayer Quiz",
+  "description": "An AI-powered trivia game that generates unique Demon Slayer questions every time you play.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
