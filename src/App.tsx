@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Sword, CheckCircle2, XCircle, Loader2, RotateCcw, Clock, Lightbulb, Volume2, Sun, Moon, Share2, Target, Award } from 'lucide-react';
+import { Sword, CheckCircle2, XCircle, Loader2, RotateCcw, Clock, Lightbulb, Volume2, Sun, Moon, Share2, Target, Award, Flame } from 'lucide-react';
 import type { Question } from './types';
 import { Auth } from './components/Auth';
 import { Leaderboard } from './components/Leaderboard';
+import { ProfileStats } from './components/ProfileStats';
 import { auth, db } from './firebase';
 import { useAuthState } from 'react-firebase-hooks/auth';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, doc, getDoc, setDoc, updateDoc, increment } from 'firebase/firestore';
+import { audio } from './utils/audio';
 
 const TOPICS = [
   'General',
@@ -25,15 +27,26 @@ const MISSIONS = [
   { id: 'm4', text: 'Score at least 800 points', target: 800 },
 ];
 
+interface HistoryItem {
+  question: Question;
+  selectedOption: string | null;
+  isCorrect: boolean;
+  scoreEarned: number;
+}
+
 export default function App() {
   const [theme, setTheme] = useState<'dark'|'light'>('dark');
   const [user] = useAuthState(auth);
   const [gameState, setGameState] = useState<'start' | 'loading' | 'playing' | 'end'>('start');
   const [topic, setTopic] = useState<string>('General');
   const [difficulty, setDifficulty] = useState<'Easy' | 'Medium' | 'Hard'>('Medium');
+  
   const [questions, setQuestions] = useState<Question[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [score, setScore] = useState(0);
+  const [streak, setStreak] = useState(0);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  
   const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
   const [isAnswered, setIsAnswered] = useState(false);
   const [timeLeft, setTimeLeft] = useState(30);
@@ -76,6 +89,7 @@ export default function App() {
   };
 
   const fetchQuestions = async () => {
+    audio.playClick();
     setGameState('loading');
     try {
       const response = await fetch(`/api/questions?topic=${encodeURIComponent(topic)}&difficulty=${difficulty}`);
@@ -86,6 +100,8 @@ export default function App() {
       setQuestions(data);
       setCurrentIndex(0);
       setScore(0);
+      setStreak(0);
+      setHistory([]);
       setGameState('playing');
       setSelectedAnswer(null);
       setIsAnswered(false);
@@ -111,6 +127,21 @@ export default function App() {
           score: finalScore,
           createdAt: serverTimestamp()
         });
+
+        const userRef = doc(db, 'users', user.uid);
+        const userSnap = await getDoc(userRef);
+        if (userSnap.exists()) {
+          await updateDoc(userRef, {
+            totalQuizzes: increment(1),
+            maxScore: Math.max(finalScore, userSnap.data().maxScore || 0)
+          });
+        } else {
+          await setDoc(userRef, {
+            totalQuizzes: 1,
+            maxScore: finalScore,
+            displayName: user.displayName
+          });
+        }
       } catch (e) {
         console.error("Error saving score", e);
       }
@@ -119,26 +150,55 @@ export default function App() {
 
   const handleTimeout = () => {
     if (isAnswered) return;
+    audio.playIncorrect();
     setIsAnswered(true);
     setSelectedAnswer(null);
+    setStreak(0);
+    
+    setHistory(prev => [...prev, {
+      question: questions[currentIndex],
+      selectedOption: null,
+      isCorrect: false,
+      scoreEarned: 0
+    }]);
+
     nextQuestion(score);
   };
 
   const handleAnswerClick = (option: string) => {
     if (isAnswered) return;
+    audio.playClick();
     setTimerActive(false);
     setSelectedAnswer(option);
     setIsAnswered(true);
 
-    let newScore = score;
     const isCorrect = option === questions[currentIndex].correctAnswer;
+    let earned = 0;
     
     if (isCorrect) {
+      audio.playCorrect();
+      const newStreak = streak + 1;
+      setStreak(newStreak);
       const timeBonus = Math.floor(timeLeft * 10);
       const basePoints = questions[currentIndex].isBonus ? 300 : 100;
-      newScore = score + basePoints + timeBonus;
-      setScore(newScore);
+      const streakMultiplier = 1 + (newStreak * 0.1); 
+      earned = Math.floor((basePoints + timeBonus) * streakMultiplier);
+      
+    } else {
+      audio.playIncorrect();
+      setStreak(0);
     }
+    
+    const newScore = score + earned;
+    setScore(newScore);
+
+    setHistory(prev => [...prev, {
+      question: questions[currentIndex],
+      selectedOption: option,
+      isCorrect,
+      scoreEarned: earned
+    }]);
+
     nextQuestion(newScore);
   };
 
@@ -163,6 +223,7 @@ export default function App() {
 
   const getHint = async () => {
     if (hint || hintLoading || timeLeft <= 5) return;
+    audio.playClick();
     setHintLoading(true);
     setTimeLeft(prev => Math.max(0, prev - 5)); // penalty
     try {
@@ -182,6 +243,7 @@ export default function App() {
 
   const readAloud = async () => {
     if (ttsLoading) return;
+    audio.playClick();
     setTtsLoading(true);
     try {
       const res = await fetch('/api/tts', {
@@ -204,6 +266,7 @@ export default function App() {
   };
 
   const shareResult = async () => {
+    audio.playClick();
     if (navigator.share) {
       try {
         const rank = score >= 2000 ? "Hashira" : score >= 1000 ? "Kinoe" : "Mizunoto";
@@ -230,7 +293,10 @@ export default function App() {
       {/* Header Auth & Theme Toggle */}
       <div className="absolute top-4 right-4 z-20 flex items-center gap-4">
         <button 
-          onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+          onClick={() => {
+            audio.playClick();
+            setTheme(t => t === 'dark' ? 'light' : 'dark');
+          }}
           className="p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
           title="Toggle Nichirin Bright Mode"
         >
@@ -269,6 +335,8 @@ export default function App() {
                   <div className="text-sm font-medium">{dailyMission.text}</div>
                 </div>
               </div>
+              
+              <ProfileStats />
 
               <div className="flex flex-col gap-6 w-full mx-auto bg-white/60 dark:bg-slate-800/40 p-6 rounded-2xl border border-slate-200 dark:border-slate-700/50">
                 <div className="space-y-3">
@@ -277,7 +345,7 @@ export default function App() {
                     {TOPICS.map(t => (
                       <button 
                         key={t}
-                        onClick={() => setTopic(t)}
+                        onClick={() => { audio.playClick(); setTopic(t); }}
                         className={`px-4 py-2 rounded-xl border-2 transition-all font-medium text-sm ${topic === t ? 'border-rose-500 bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-400' : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:border-slate-300 dark:hover:border-slate-600'}`}
                       >
                         {t}
@@ -290,19 +358,19 @@ export default function App() {
                   <label className="text-sm font-semibold tracking-wider text-slate-500 dark:text-slate-400 uppercase">Difficulty</label>
                   <div className="grid grid-cols-3 gap-3">
                     <button 
-                      onClick={() => setDifficulty('Easy')}
+                      onClick={() => { audio.playClick(); setDifficulty('Easy'); }}
                       className={`p-3 rounded-xl border-2 transition-all font-medium text-sm ${difficulty === 'Easy' ? 'border-emerald-500 bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400' : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:border-slate-300 dark:hover:border-slate-600'}`}
                     >
                       Easy
                     </button>
                     <button 
-                      onClick={() => setDifficulty('Medium')}
+                      onClick={() => { audio.playClick(); setDifficulty('Medium'); }}
                       className={`p-3 rounded-xl border-2 transition-all font-medium text-sm ${difficulty === 'Medium' ? 'border-amber-500 bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400' : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:border-slate-300 dark:hover:border-slate-600'}`}
                     >
                       Medium
                     </button>
                     <button 
-                      onClick={() => setDifficulty('Hard')}
+                      onClick={() => { audio.playClick(); setDifficulty('Hard'); }}
                       className={`p-3 rounded-xl border-2 transition-all font-medium text-sm ${difficulty === 'Hard' ? 'border-red-500 bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400' : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:border-slate-300 dark:hover:border-slate-600'}`}
                     >
                       Hard
@@ -326,10 +394,28 @@ export default function App() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="text-center flex flex-col items-center gap-4"
+              className="w-full space-y-6"
             >
-              <Loader2 className="w-12 h-12 text-rose-500 animate-spin" />
-              <p className="text-slate-500 dark:text-slate-400 font-medium">Forging new questions...</p>
+              <div className="flex items-center justify-between animate-pulse">
+                <div className="h-4 bg-slate-200 dark:bg-slate-700 rounded w-24"></div>
+                <div className="h-4 bg-slate-200 dark:bg-slate-700 rounded w-32"></div>
+              </div>
+              <div className="w-full bg-slate-200 dark:bg-slate-800 h-2 rounded-full overflow-hidden animate-pulse"></div>
+              
+              <div className="bg-white/90 dark:bg-slate-800/80 backdrop-blur-md rounded-3xl p-6 md:p-8 border border-slate-200 dark:border-slate-700/50 shadow-2xl space-y-6 animate-pulse">
+                <div className="h-8 bg-slate-200 dark:bg-slate-700 rounded w-3/4 mb-8"></div>
+                <div className="space-y-4">
+                  {[1, 2, 3, 4].map((i) => (
+                    <div key={i} className="h-14 bg-slate-100 dark:bg-slate-700/50 rounded-2xl w-full"></div>
+                  ))}
+                </div>
+                <div className="flex justify-end pt-4">
+                  <div className="h-4 bg-slate-200 dark:bg-slate-700 rounded w-32"></div>
+                </div>
+              </div>
+              <div className="text-center mt-6 text-slate-500 dark:text-slate-400 flex items-center justify-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" /> Forging new questions...
+              </div>
             </motion.div>
           )}
 
@@ -343,7 +429,16 @@ export default function App() {
             >
               <div className="flex items-center justify-between text-sm font-semibold text-slate-500 dark:text-slate-400">
                 <span>Question {currentIndex + 1} of {questions.length}</span>
-                <div className="flex items-center gap-6">
+                <div className="flex items-center gap-4 md:gap-6">
+                  {streak > 1 && (
+                    <motion.span 
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      className="hidden md:flex items-center gap-1 text-orange-500 font-bold"
+                    >
+                      <Flame className="w-4 h-4" /> x{streak}
+                    </motion.span>
+                  )}
                   <span className={`flex items-center gap-2 ${timeLeft <= 5 ? 'text-red-500 animate-pulse' : 'text-slate-600 dark:text-slate-300'}`}>
                     <Clock className="w-5 h-5" /> {timeLeft}s
                   </span>
@@ -495,7 +590,7 @@ export default function App() {
 
                 <div className="pt-6 flex flex-col sm:flex-row gap-4 justify-center items-center">
                   <button
-                    onClick={fetchQuestions}
+                    onClick={() => { audio.playClick(); fetchQuestions(); }}
                     className="inline-flex items-center justify-center gap-2 px-8 py-4 bg-rose-600 hover:bg-rose-500 text-white rounded-full font-bold text-lg transition-all active:scale-95 shadow-lg shadow-rose-600/20 w-full sm:w-auto"
                   >
                     Play Again <RotateCcw className="w-5 h-5" />
@@ -508,6 +603,29 @@ export default function App() {
                       Share <Share2 className="w-5 h-5" />
                     </button>
                   )}
+                </div>
+              </div>
+
+              {/* Quiz History */}
+              <div className="bg-white/90 dark:bg-slate-800/80 backdrop-blur-md rounded-3xl p-6 md:p-8 border border-slate-200 dark:border-slate-700/50 shadow-2xl space-y-4 text-left">
+                <h3 className="text-xl font-bold text-slate-800 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 pb-2">Quiz History</h3>
+                <div className="space-y-4 max-h-80 overflow-y-auto pr-2 custom-scrollbar">
+                  {history.map((item, idx) => (
+                    <div key={idx} className={`p-4 rounded-xl border ${item.isCorrect ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20' : 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20'}`}>
+                      <p className="font-bold text-slate-800 dark:text-slate-200 mb-2">{item.question.question}</p>
+                      <div className="text-sm space-y-1">
+                        <p className={item.isCorrect ? 'text-emerald-700 dark:text-emerald-400 font-medium' : 'text-red-700 dark:text-red-400 font-medium'}>
+                          Your Answer: {item.selectedOption || 'Time Out'} {item.isCorrect && '(Correct)'}
+                        </p>
+                        {!item.isCorrect && (
+                          <p className="text-emerald-700 dark:text-emerald-400 font-medium">
+                            Correct Answer: {item.question.correctAnswer}
+                          </p>
+                        )}
+                        <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">Earned: +{item.scoreEarned} pts</p>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
 
