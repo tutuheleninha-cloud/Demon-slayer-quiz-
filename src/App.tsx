@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Sword, CheckCircle2, XCircle, Loader2, RotateCcw, Clock, Lightbulb, Volume2, Sun, Moon, Share2, Target, Award, Flame } from 'lucide-react';
+import { Sword, CheckCircle2, XCircle, Loader2, RotateCcw, Clock, Lightbulb, Volume2, Sun, Moon, Share2, Target, Award, Flame, Globe, Bookmark } from 'lucide-react';
 import type { Question } from './types';
 import { Auth } from './components/Auth';
 import { Leaderboard } from './components/Leaderboard';
 import { ProfileStats } from './components/ProfileStats';
 import { auth, db } from './firebase';
 import { useAuthState } from 'react-firebase-hooks/auth';
-import { collection, addDoc, serverTimestamp, doc, getDoc, setDoc, updateDoc, increment } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, doc, getDoc, setDoc, updateDoc, increment, query, getDocs } from 'firebase/firestore';
 import { audio } from './utils/audio';
+import confetti from 'canvas-confetti';
 
 const TOPICS = [
   'General',
@@ -57,6 +58,9 @@ export default function App() {
   const [ttsLoading, setTtsLoading] = useState(false);
   
   const [missionCompleted, setMissionCompleted] = useState(false);
+  const [lang, setLang] = useState<'en' | 'ja'>('en');
+  const [favorites, setFavorites] = useState<Question[]>([]);
+  const [historyTab, setHistoryTab] = useState<'history'|'favorites'>('history');
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -78,7 +82,7 @@ export default function App() {
 
   const fetchBonusQuestion = async () => {
     try {
-      const response = await fetch('/api/bonus-question');
+      const response = await fetch(`/api/bonus-question?lang=${lang}`);
       if (response.ok) {
         const bonus = await response.json();
         setQuestions(prev => [...prev, bonus]);
@@ -92,7 +96,7 @@ export default function App() {
     audio.playClick();
     setGameState('loading');
     try {
-      const response = await fetch(`/api/questions?topic=${encodeURIComponent(topic)}&difficulty=${difficulty}`);
+      const response = await fetch(`/api/questions?topic=${encodeURIComponent(topic)}&difficulty=${difficulty}&lang=${lang}`);
       if (!response.ok) {
         throw new Error('Failed to fetch questions');
       }
@@ -130,16 +134,30 @@ export default function App() {
 
         const userRef = doc(db, 'users', user.uid);
         const userSnap = await getDoc(userRef);
+        const prevMax = userSnap.exists() ? (userSnap.data().maxScore || 0) : 0;
+        
+        if (finalScore > prevMax) {
+          confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 } });
+        }
+
+        const correctCount = history.filter(h => h.isCorrect).length;
+        const totalCount = history.length;
+
         if (userSnap.exists()) {
           await updateDoc(userRef, {
             totalQuizzes: increment(1),
-            maxScore: Math.max(finalScore, userSnap.data().maxScore || 0)
+            maxScore: Math.max(finalScore, prevMax),
+            [`topicStats.${topic}.correct`]: increment(correctCount),
+            [`topicStats.${topic}.total`]: increment(totalCount)
           });
         } else {
           await setDoc(userRef, {
             totalQuizzes: 1,
             maxScore: finalScore,
-            displayName: user.displayName
+            displayName: user.displayName,
+            topicStats: {
+              [topic]: { correct: correctCount, total: totalCount }
+            }
           });
         }
       } catch (e) {
@@ -230,7 +248,7 @@ export default function App() {
       const res = await fetch('/api/hint', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: questions[currentIndex].question })
+        body: JSON.stringify({ question: questions[currentIndex].question, lang })
       });
       const data = await res.json();
       setHint(data.hint);
@@ -281,6 +299,47 @@ export default function App() {
     }
   };
 
+  const toggleFavorite = async (questionToSave: Question) => {
+    if (!user) {
+      alert("Sign in to save your favorite questions!");
+      return;
+    }
+    audio.playClick();
+    try {
+      await addDoc(collection(db, 'users', user.uid, 'favorites'), {
+        question: questionToSave.question,
+        options: questionToSave.options,
+        correctAnswer: questionToSave.correctAnswer,
+        imageUrl: questionToSave.imageUrl || null,
+        addedAt: serverTimestamp()
+      });
+      alert("Question saved to favorites!");
+    } catch (error) {
+      console.error("Failed to save favorite:", error);
+    }
+  };
+
+  const loadFavorites = async () => {
+    if (!user) return;
+    try {
+      const favsRef = collection(db, 'users', user.uid, 'favorites');
+      const snap = await getDocs(query(favsRef));
+      const loadedFavs: Question[] = [];
+      snap.forEach(doc => {
+        loadedFavs.push(doc.data() as Question);
+      });
+      setFavorites(loadedFavs);
+    } catch (error) {
+      console.error("Failed to load favorites", error);
+    }
+  };
+
+  useEffect(() => {
+    if (historyTab === 'favorites' && user) {
+      loadFavorites();
+    }
+  }, [historyTab, user]);
+
   return (
     <div className={`${theme} min-h-screen bg-stone-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100 flex flex-col p-4 font-sans selection:bg-rose-500/30 relative transition-colors duration-300`}>
       <audio ref={audioRef} className="hidden" />
@@ -292,6 +351,17 @@ export default function App() {
 
       {/* Header Auth & Theme Toggle */}
       <div className="absolute top-4 right-4 z-20 flex items-center gap-4">
+        <button 
+          onClick={() => {
+            audio.playClick();
+            setLang(l => l === 'en' ? 'ja' : 'en');
+          }}
+          className="p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/10 transition-colors flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-300 uppercase"
+          title="Toggle Language"
+        >
+          <Globe className="w-5 h-5 text-sky-500" />
+          {lang}
+        </button>
         <button 
           onClick={() => {
             audio.playClick();
@@ -483,6 +553,13 @@ export default function App() {
                   >
                     {ttsLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Volume2 className="w-5 h-5" />}
                   </button>
+                  <button 
+                    onClick={() => toggleFavorite(questions[currentIndex])} 
+                    className="p-3 bg-rose-100 hover:bg-rose-200 dark:bg-rose-900/30 dark:hover:bg-rose-800/50 rounded-full text-rose-600 dark:text-rose-400 transition-colors shrink-0"
+                    title="Save to Favorites"
+                  >
+                    <Bookmark className="w-5 h-5" />
+                  </button>
                 </div>
 
                 {hint && (
@@ -606,11 +683,25 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Quiz History */}
+              {/* Quiz History & Favorites */}
               <div className="bg-white/90 dark:bg-slate-800/80 backdrop-blur-md rounded-3xl p-6 md:p-8 border border-slate-200 dark:border-slate-700/50 shadow-2xl space-y-4 text-left">
-                <h3 className="text-xl font-bold text-slate-800 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 pb-2">Quiz History</h3>
+                <div className="flex border-b border-slate-200 dark:border-slate-700 mb-4">
+                  <button 
+                    onClick={() => setHistoryTab('history')}
+                    className={`pb-2 px-4 text-lg font-bold transition-colors ${historyTab === 'history' ? 'text-rose-600 border-b-2 border-rose-600' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                  >
+                    Quiz History
+                  </button>
+                  <button 
+                    onClick={() => setHistoryTab('favorites')}
+                    className={`pb-2 px-4 text-lg font-bold transition-colors ${historyTab === 'favorites' ? 'text-rose-600 border-b-2 border-rose-600' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                  >
+                    My Favorites
+                  </button>
+                </div>
+                
                 <div className="space-y-4 max-h-80 overflow-y-auto pr-2 custom-scrollbar">
-                  {history.map((item, idx) => (
+                  {historyTab === 'history' && history.map((item, idx) => (
                     <div key={idx} className={`p-4 rounded-xl border ${item.isCorrect ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20' : 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20'}`}>
                       <p className="font-bold text-slate-800 dark:text-slate-200 mb-2">{item.question.question}</p>
                       <div className="text-sm space-y-1">
@@ -623,6 +714,24 @@ export default function App() {
                           </p>
                         )}
                         <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">Earned: +{item.scoreEarned} pts</p>
+                      </div>
+                    </div>
+                  ))}
+
+                  {historyTab === 'favorites' && favorites.length === 0 && (
+                    <div className="text-center p-8 text-slate-500 dark:text-slate-400">
+                      <Bookmark className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                      No favorite questions saved yet.
+                    </div>
+                  )}
+
+                  {historyTab === 'favorites' && favorites.map((fav, idx) => (
+                    <div key={idx} className="p-4 rounded-xl border bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700">
+                      <p className="font-bold text-slate-800 dark:text-slate-200 mb-2">{fav.question}</p>
+                      <div className="text-sm space-y-1">
+                        <p className="text-emerald-600 dark:text-emerald-400 font-medium">
+                          Correct Answer: {fav.correctAnswer}
+                        </p>
                       </div>
                     </div>
                   ))}

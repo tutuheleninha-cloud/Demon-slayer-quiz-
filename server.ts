@@ -21,9 +21,10 @@ async function startServer() {
   // API Route to generate random Demon Slayer questions
   app.get('/api/questions', async (req, res) => {
     try {
-      const { topic, difficulty } = req.query;
+      const { topic, difficulty, lang } = req.query;
+      const targetLanguage = lang === 'ja' ? 'Japanese' : 'English';
       
-      let basePrompt = 'Generate 5 random, unique multiple-choice trivia questions about the anime and manga Demon Slayer (Kimetsu no Yaiba).';
+      let basePrompt = `Generate 5 random, unique multiple-choice trivia questions about the anime and manga Demon Slayer (Kimetsu no Yaiba). The questions and options MUST be written in ${targetLanguage}.`;
       
       if (topic && topic !== 'General') {
         basePrompt += ` Focus specifically on the topic: ${topic}.`;
@@ -88,8 +89,9 @@ async function startServer() {
   // API Route to generate a hint in the voice of a Kasugai Crow
   app.post('/api/hint', async (req, res) => {
     try {
-      const { question } = req.body;
-      const prompt = `You are a Kasugai Crow from Demon Slayer. Caw! Give a cryptic, fun hint for the following trivia question, but DO NOT give away the exact answer. Speak in the voice of a Kasugai Crow (lots of caws, squawks, being bossy or dramatic). Question: ${question}`;
+      const { question, lang } = req.body;
+      const targetLanguage = lang === 'ja' ? 'Japanese' : 'English';
+      const prompt = `You are a Kasugai Crow from Demon Slayer. Caw! Give a cryptic, fun hint for the following trivia question, but DO NOT give away the exact answer. Speak in the voice of a Kasugai Crow (lots of caws, squawks, being bossy or dramatic). The hint MUST be written in ${targetLanguage}. Question: ${question}`;
       
       const response = await ai.models.generateContent({
         model: 'gemini-3.5-flash',
@@ -130,6 +132,8 @@ async function startServer() {
   // API Route for Visual Bonus Round
   app.get('/api/bonus-question', async (req, res) => {
     try {
+      const { lang } = req.query;
+      const targetLanguage = lang === 'ja' ? 'Japanese' : 'English';
       const characterPrompt = "A highly stylized, mysterious, minimalist silhouette of a famous Demon Slayer character holding their weapon, dark fantasy anime style, dramatic lighting, solid dark background.";
       
       const imageResponse = await ai.models.generateImages({
@@ -178,7 +182,7 @@ async function startServer() {
       // 3. Generate question
       const qResp = await ai.models.generateContent({
         model: 'gemini-3.5-flash',
-        contents: `Generate a multiple choice trivia question where the answer is ${characterName}. Format as JSON matching this schema: { question: string, options: string[], correctAnswer: string }`,
+        contents: `Generate a multiple choice trivia question where the answer is ${characterName}. Format as JSON matching this schema: { question: string, options: string[], correctAnswer: string }. The questions and options MUST be written in ${targetLanguage}.`,
         config: {
           responseMimeType: 'application/json',
         }
